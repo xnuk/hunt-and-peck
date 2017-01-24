@@ -15,6 +15,42 @@ namespace hap.Services
     {
         private readonly IUIAutomation _automation = new CUIAutomation();
 
+        private static readonly int[] s_containerPropertyIds = new int[]
+        {
+            UIA_PropertyIds.UIA_IsExpandCollapsePatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsGridPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsItemContainerPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsMultipleViewPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsScrollPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsSelectionPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsSpreadsheetPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsTablePatternAvailablePropertyId
+        };
+
+        private static readonly int[] s_nonContainerControlTypeIds = new int[]
+        {
+            UIA_ControlTypeIds.UIA_AppBarControlTypeId,
+            UIA_ControlTypeIds.UIA_ButtonControlTypeId,
+            UIA_ControlTypeIds.UIA_CalendarControlTypeId,
+            UIA_ControlTypeIds.UIA_DocumentControlTypeId,
+            UIA_ControlTypeIds.UIA_MenuBarControlTypeId,
+            UIA_ControlTypeIds.UIA_MenuItemControlTypeId,
+            UIA_ControlTypeIds.UIA_PaneControlTypeId,
+            UIA_ControlTypeIds.UIA_TabControlTypeId,
+            UIA_ControlTypeIds.UIA_SliderControlTypeId,
+            UIA_ControlTypeIds.UIA_SpinnerControlTypeId,
+            UIA_ControlTypeIds.UIA_SplitButtonControlTypeId,
+            UIA_ControlTypeIds.UIA_ToolBarControlTypeId,
+            UIA_ControlTypeIds.UIA_GroupControlTypeId
+        };
+
+        private static readonly int[] s_noFocusControlTypeIds = new int[]
+        {
+            UIA_ControlTypeIds.UIA_GroupControlTypeId,
+            UIA_ControlTypeIds.UIA_PaneControlTypeId,
+            UIA_ControlTypeIds.UIA_WindowControlTypeId
+        };
+
         public HintSession EnumHints()
         {
             var foregroundWindow = User32.GetForegroundWindow();
@@ -69,7 +105,7 @@ namespace hap.Services
 
             foreach (var element in elements)
             {
-                var boundingRectObject = element.CurrentBoundingRectangle;
+                var boundingRectObject = element.CachedBoundingRectangle;
                 if ((boundingRectObject.right > boundingRectObject.left) && (boundingRectObject.bottom > boundingRectObject.top))
                 {
                     var niceRect = new Rect(new Point(boundingRectObject.left, boundingRectObject.top), new Point(boundingRectObject.right, boundingRectObject.bottom));
@@ -103,7 +139,17 @@ namespace hap.Services
         private List<IUIAutomationElement> EnumElements(IntPtr hWnd)
         {
             var result = new List<IUIAutomationElement>();
-            var automationElement = _automation.ElementFromHandle(hWnd);
+
+            var cacheRequest = _automation.CreateCacheRequest();
+            foreach (var propertyId in s_containerPropertyIds)
+            {
+                cacheRequest.AddProperty(propertyId);
+            }
+            cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
+            cacheRequest.AddPattern(UIA_PatternIds.UIA_InvokePatternId);
+            cacheRequest.AddPattern(UIA_PatternIds.UIA_TogglePatternId);
+            cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsKeyboardFocusablePropertyId);
+            cacheRequest.AddProperty(UIA_PropertyIds.UIA_ControlTypePropertyId);
 
             var conditionControlView = _automation.ControlViewCondition;
             var conditionEnabled = _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true);
@@ -112,10 +158,27 @@ namespace hap.Services
             var conditionOnScreen = _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsOffscreenPropertyId, false);
             var condition = _automation.CreateAndCondition(enabledControlCondition, conditionOnScreen);
 
-            var elementArray = automationElement.FindAll(TreeScope.TreeScope_Descendants, condition);
-            for (var i = 0; i < elementArray.Length; ++i)
+            var elementStack = new Stack<IUIAutomationElement>();
+            elementStack.Push(_automation.ElementFromHandle(hWnd));
+
+            while (elementStack.Count > 0)
             {
-                result.Add(elementArray.GetElement(i));
+                var element = elementStack.Pop();
+                var children = element.FindAllBuildCache(TreeScope.TreeScope_Children, condition, cacheRequest);
+
+                for (var i = 0; i < children.Length; ++i)
+                {
+                    var childElement = children.GetElement(i);
+                    
+                    if (s_nonContainerControlTypeIds.Contains(childElement.CachedControlType) ||
+                        s_containerPropertyIds.All(propertyId => !(bool) childElement.GetCachedPropertyValue(propertyId)))
+                    {
+                        // non-container
+                        elementStack.Push(childElement);
+                    }
+
+                    result.Add(childElement);
+                }
             }
 
             return result;
@@ -128,16 +191,38 @@ namespace hap.Services
         /// <param name="hintBounds">The hint bounds</param>
         /// <param name="automationElement">The associated automation element</param>
         /// <returns>The created hint, else null if the hint could not be created</returns>
-        private UiAutomationHint CreateHint(IntPtr owningWindow, Rect hintBounds, IUIAutomationElement automationElement)
+        private Hint CreateHint(IntPtr owningWindow, Rect hintBounds, IUIAutomationElement automationElement)
         {
             try
             {
-                var pattern = (IUIAutomationInvokePattern) automationElement.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId);
-                if (pattern == null)
+                var invokePattern = (IUIAutomationInvokePattern) automationElement.GetCachedPattern(
+                    UIA_PatternIds.UIA_InvokePatternId);
+                if (invokePattern != null)
                 {
-                    return null;
+                    return new UiAutomationInvokeHint(owningWindow, invokePattern, hintBounds);
                 }
-                return new UiAutomationHint(owningWindow, pattern, hintBounds);
+
+                var togglePattern = (IUIAutomationTogglePattern) automationElement.GetCachedPattern(
+                    UIA_PatternIds.UIA_TogglePatternId);
+                if (togglePattern != null)
+                {
+                    return new UiAutomationToggleHint(owningWindow, togglePattern, hintBounds);
+                }
+
+                var isFocusable = automationElement.CachedIsKeyboardFocusable != 0;
+                if (isFocusable && !s_noFocusControlTypeIds.Contains(automationElement.CachedControlType))
+                {
+                    return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
+                }
+
+                var isContainer = s_containerPropertyIds.Any(
+                    propertyId => (bool) automationElement.GetCachedPropertyValue(propertyId));
+                if (isContainer)
+                {
+                    return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
+                }
+
+                return null;
             }
             catch (Exception)
             {
