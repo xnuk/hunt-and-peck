@@ -13,11 +13,8 @@ namespace hap.Services
 {
     internal class UiAutomationHintProviderService : IHintProviderService, IDebugHintProviderService
     {
-        private readonly IUIAutomation _automation = new CUIAutomation();
-
         private static readonly int[] s_containerPropertyIds = new int[]
         {
-            UIA_PropertyIds.UIA_IsExpandCollapsePatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsGridPatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsItemContainerPatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsMultipleViewPatternAvailablePropertyId,
@@ -29,19 +26,23 @@ namespace hap.Services
 
         private static readonly int[] s_nonContainerControlTypeIds = new int[]
         {
-            UIA_ControlTypeIds.UIA_AppBarControlTypeId,
-            UIA_ControlTypeIds.UIA_ButtonControlTypeId,
             UIA_ControlTypeIds.UIA_CalendarControlTypeId,
             UIA_ControlTypeIds.UIA_DocumentControlTypeId,
-            UIA_ControlTypeIds.UIA_MenuBarControlTypeId,
-            UIA_ControlTypeIds.UIA_MenuItemControlTypeId,
+            UIA_ControlTypeIds.UIA_EditControlTypeId,
             UIA_ControlTypeIds.UIA_PaneControlTypeId,
             UIA_ControlTypeIds.UIA_TabControlTypeId,
             UIA_ControlTypeIds.UIA_SliderControlTypeId,
             UIA_ControlTypeIds.UIA_SpinnerControlTypeId,
-            UIA_ControlTypeIds.UIA_SplitButtonControlTypeId,
-            UIA_ControlTypeIds.UIA_ToolBarControlTypeId,
-            UIA_ControlTypeIds.UIA_GroupControlTypeId
+        };
+
+        private static readonly int[] s_containerItemPropertyIds = new int[]
+        {
+            UIA_PropertyIds.UIA_IsExpandCollapsePatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsGridItemPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsScrollItemPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsSelectionItemPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsSpreadsheetItemPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsTableItemPatternAvailablePropertyId
         };
 
         private static readonly int[] s_noFocusControlTypeIds = new int[]
@@ -50,6 +51,42 @@ namespace hap.Services
             UIA_ControlTypeIds.UIA_PaneControlTypeId,
             UIA_ControlTypeIds.UIA_WindowControlTypeId
         };
+
+        private readonly IUIAutomation _automation;
+
+        private readonly IUIAutomationCondition _accessibleCondition;
+
+        private readonly IUIAutomationCacheRequest _cacheRequest;
+
+        private readonly UiAutomationEnumerator _enumerator;
+
+        public UiAutomationHintProviderService()
+        {
+            _automation = new CUIAutomation();
+
+            _accessibleCondition = _automation.CreateAndCondition(
+                    _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true),
+                    _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsOffscreenPropertyId, false));
+
+            _cacheRequest = _automation.CreateCacheRequest();
+            foreach (var propertyId in s_containerPropertyIds)
+            {
+                _cacheRequest.AddProperty(propertyId);
+            }
+            foreach (var propertyId in s_containerItemPropertyIds)
+            {
+                _cacheRequest.AddProperty(propertyId);
+            }
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsEnabledPropertyId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsOffscreenPropertyId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_InvokePatternId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_TogglePatternId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsKeyboardFocusablePropertyId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+            _enumerator = new UiAutomationEnumerator(this);
+        }
 
         public HintSession EnumHints()
         {
@@ -96,7 +133,7 @@ namespace hap.Services
         private HintSession EnumWindowHints(IntPtr hWnd, Func<IntPtr, Rect, IUIAutomationElement, Hint> hintFactory)
         {
             var result = new List<Hint>();
-            var elements = EnumElements(hWnd);
+            var elements = _enumerator.EnumElements(hWnd);
 
             // Window bounds
             var rawWindowBounds = new RECT();
@@ -130,60 +167,7 @@ namespace hap.Services
                 OwningWindowBounds = windowBounds,
             };
         }
-
-        /// <summary>
-        /// Enumerates the automation elements from the given window
-        /// </summary>
-        /// <param name="hWnd">The window handle</param>
-        /// <returns>All of the automation elements found</returns>
-        private List<IUIAutomationElement> EnumElements(IntPtr hWnd)
-        {
-            var result = new List<IUIAutomationElement>();
-
-            var cacheRequest = _automation.CreateCacheRequest();
-            foreach (var propertyId in s_containerPropertyIds)
-            {
-                cacheRequest.AddProperty(propertyId);
-            }
-            cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
-            cacheRequest.AddPattern(UIA_PatternIds.UIA_InvokePatternId);
-            cacheRequest.AddPattern(UIA_PatternIds.UIA_TogglePatternId);
-            cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsKeyboardFocusablePropertyId);
-            cacheRequest.AddProperty(UIA_PropertyIds.UIA_ControlTypePropertyId);
-
-            var conditionControlView = _automation.ControlViewCondition;
-            var conditionEnabled = _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true);
-            var enabledControlCondition = _automation.CreateAndCondition(conditionControlView, conditionEnabled);
-
-            var conditionOnScreen = _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsOffscreenPropertyId, false);
-            var condition = _automation.CreateAndCondition(enabledControlCondition, conditionOnScreen);
-
-            var elementStack = new Stack<IUIAutomationElement>();
-            elementStack.Push(_automation.ElementFromHandle(hWnd));
-
-            while (elementStack.Count > 0)
-            {
-                var element = elementStack.Pop();
-                var children = element.FindAllBuildCache(TreeScope.TreeScope_Children, condition, cacheRequest);
-
-                for (var i = 0; i < children.Length; ++i)
-                {
-                    var childElement = children.GetElement(i);
-                    
-                    if (s_nonContainerControlTypeIds.Contains(childElement.CachedControlType) ||
-                        s_containerPropertyIds.All(propertyId => !(bool) childElement.GetCachedPropertyValue(propertyId)))
-                    {
-                        // non-container
-                        elementStack.Push(childElement);
-                    }
-
-                    result.Add(childElement);
-                }
-            }
-
-            return result;
-        }
-
+        
         /// <summary>
         /// Creates a UI Automation element from the given automation element
         /// </summary>
@@ -214,7 +198,8 @@ namespace hap.Services
                 {
                     return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
                 }
-
+                // TODO: noncontainer
+                // TODO: focus part of item?
                 var isContainer = s_containerPropertyIds.Any(
                     propertyId => (bool) automationElement.GetCachedPropertyValue(propertyId));
                 if (isContainer)
@@ -264,6 +249,343 @@ namespace hap.Services
             }
 
             return null;
+        }
+
+        private class UiAutomationEnumerator
+        {
+            private readonly UiAutomationHintProviderService _parent;
+
+            private List<IUIAutomationElement> _result;
+
+            public UiAutomationEnumerator(UiAutomationHintProviderService parent)
+            {
+                _parent = parent;
+            }
+
+            /// <summary>
+            /// Enumerates the automation elements from the given window
+            /// </summary>
+            /// <param name="hWnd">The window handle</param>
+            /// <returns>All of the automation elements found</returns>
+            public List<IUIAutomationElement> EnumElements(IntPtr hWnd)
+            {
+                _result = new List<IUIAutomationElement>();
+                AddElements(_parent._automation.ElementFromHandleBuildCache(hWnd, _parent._cacheRequest));
+                return _result;
+            }
+            
+            private void AddElements(IUIAutomationElement element)
+            {
+                var children = element.FindAllBuildCache(TreeScope.TreeScope_Children, _parent._accessibleCondition, _parent._cacheRequest);
+                for (var i = 0; i < children.Length; ++i)
+                {
+                    var childElement = children.GetElement(i);
+                    _result.Add(childElement);
+
+                    if (s_nonContainerControlTypeIds.Contains(childElement.CachedControlType) ||
+                        s_containerPropertyIds.All(propertyId => !(bool)childElement.GetCachedPropertyValue(propertyId)))
+                    {
+                        // non-container
+                        AddElements(childElement);
+                    }
+                    else
+                    {
+                        // container
+                        new ContainerEnumerator(this).AddContainerItems(childElement);
+                    }
+                }
+            }
+
+            // Typical container structure (list or tree)
+            //     (Header)
+            //     item
+            //         parts of item
+            //     item
+            //         item
+            //             parts of item
+            //     ....
+            //     (Footer)
+            // Bidirectional recursive enumeration
+            // Example:
+            //     container
+            //         item1 @ level1
+            //             item2 @ level2
+            //                 item3 @ level3 (on-screen)
+            private class ContainerEnumerator
+            {
+                private readonly UiAutomationEnumerator _parent;
+
+                private readonly IUIAutomationTreeWalker _walker;
+
+                public ContainerEnumerator(UiAutomationEnumerator parent)
+                {
+                    _parent = parent;
+                    _walker = _parent._parent._automation.RawViewWalker;
+                }
+
+                public void AddContainerItems(IUIAutomationElement containerElement)
+                {
+                    AddContainerItems2(containerElement, 0);
+                }
+
+                private void AddContainerItems2(IUIAutomationElement itemElement, int itemLevel)
+                {
+                    var elementIds = new HashSet<string>();
+                    Func<IUIAutomationElement, bool> addNewElement = elem => elementIds.Add(
+                        string.Join(".", from id in (int[])elem.GetRuntimeId() select id.ToString()));
+                    Func<IUIAutomationElement, bool> isItemElement = elem => s_containerItemPropertyIds.Any(
+                        propertyId => (bool)elem.GetCachedPropertyValue(propertyId));
+
+                    // Enumerate on-screen items
+
+                    // TODO: isoffscreen is false for zero size bounding rectangle
+                    // Recursively enumerate on-screen elements forwards
+                    IUIAutomationElement itemFoundFront = null;
+                    for (var curElement = _walker.GetFirstChildElementBuildCache(itemElement, _parent._parent._cacheRequest);
+                        curElement != null && curElement.CachedIsOffscreen == 0 && addNewElement(curElement);
+                        curElement = _walker.GetNextSiblingElementBuildCache(curElement, _parent._parent._cacheRequest))
+                    {
+                        if (isItemElement(curElement))
+                        {
+                            // Found an on-screen item
+                            // Break!
+                            itemFoundFront = curElement;
+                            break;
+                        }
+                        else if (curElement.CachedIsEnabled != 0)
+                        {
+                            // Find non-item elements
+                            _parent.AddElements(curElement);
+                        }
+                    }
+
+                    // Recursively enumerate on-screen elements backwards
+                    IUIAutomationElement itemFoundBack = null;
+                    for (var curElement = _walker.GetLastChildElementBuildCache(itemElement, _parent._parent._cacheRequest);
+                        curElement != null && curElement.CachedIsOffscreen == 0 && addNewElement(curElement);
+                        curElement = _walker.GetPreviousSiblingElementBuildCache(curElement, _parent._parent._cacheRequest))
+                    {
+                        if (isItemElement(curElement))
+                        {
+                            // Found an on-screen item
+                            // Break!
+                            itemFoundBack = curElement;
+                            break;
+                        }
+                        else if (curElement.CachedIsEnabled != 0)
+                        {
+                            // Find non-item elements
+                            _parent.AddElements(curElement);
+                        }
+                    }
+
+                    if (itemFoundFront != null && itemFoundBack != null)
+                    {
+                        // Found item in both
+                        // Recursively Enumerate all!
+                        var children = itemElement.FindAllBuildCache(TreeScope.TreeScope_Children, 
+                            _parent._parent._automation.CreateTrueCondition() , _parent._parent._cacheRequest);
+                        for (var i = 0; i < children.Length; ++i)
+                        {
+                            var curItem = children.GetElement(i);
+                            _parent._result.Add(curItem);
+                            AddContainerItems2(curItem, itemLevel + 1);
+                        }
+                    }
+                    else if (itemFoundFront != null)
+                    {
+                        // Found item in forward phase
+                        // Recursively Enumerate forward
+                        for (var curItem = itemFoundFront;
+                            curItem != null && curItem.CachedIsOffscreen == 0;
+                            curItem = _walker.GetNextSiblingElementBuildCache(curItem, _parent._parent._cacheRequest))
+                        {
+                            _parent._result.Add(curItem);
+                            AddContainerItems2(curItem, itemLevel + 1);
+                        }
+                    }
+                    else if (itemLevel == 0 && itemFoundBack != null)
+                    {
+                        // Found item in backward phase
+                        // Recursively Enumerate backward
+                        IUIAutomationElement frontElement;
+                        for (frontElement = itemFoundBack;
+                            frontElement != null && frontElement.CachedIsOffscreen == 0;
+                            frontElement = _walker.GetPreviousSiblingElementBuildCache(frontElement, _parent._parent._cacheRequest))
+                        {
+                            _parent._result.Add(frontElement);
+                            AddContainerItems2(frontElement, itemLevel + 1);
+                        }
+                        // descendant of pre-item1 may be on-screen
+                        if (frontElement != null)
+                        {
+                            var j = 1;
+                            for (var cur2 = frontElement;
+                                            cur2 != null;
+                                            cur2 = _walker.GetLastChildElementBuildCache(cur2,
+                                                    _parent._parent._cacheRequest), ++j)
+                            {
+                                if (cur2.CachedIsOffscreen == 0)
+                                {
+                                    //      Enumerate backward from item2
+                                    for (var curElement = cur2;
+                                        curElement != null && curElement.CachedIsOffscreen == 0;
+                                        curElement = _walker.GetPreviousSiblingElementBuildCache(curElement,
+                                                _parent._parent._cacheRequest))
+                                    {
+                                        _parent._result.Add(curElement);
+                                        AddContainerItems2(curElement, j + 1);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (itemLevel == 0)
+                        {
+                            // Search screen diagonally to find an on-screen item, e.g. item3
+                            List<IUIAutomationElement> foundElementAncestors = new List<IUIAutomationElement>();
+                            var boundingRectangle = itemElement.CurrentBoundingRectangle;
+                            double delta = 8.0 / (boundingRectangle.right - boundingRectangle.left);
+
+                            for (double t = 0; t < 1.0; t += delta)
+                            {
+                                foundElementAncestors.Clear();
+
+                                tagPOINT p;
+                                p.x = (int)Math.Floor(
+                                    boundingRectangle.left + t * (boundingRectangle.right - boundingRectangle.left));
+                                p.y = (int)Math.Floor(
+                                    boundingRectangle.top + t * (boundingRectangle.bottom - boundingRectangle.top));
+
+                                var elem = _parent._parent._automation.ElementFromPointBuildCache(p, _parent._parent._cacheRequest);
+                                if (elem != null)
+                                {
+                                    var isWindowElement = false;
+
+                                    for (var curElement = elem;
+                                        curElement != null;
+                                        curElement = _walker.GetParentElementBuildCache(curElement, _parent._parent._cacheRequest))
+                                    {
+                                        if (_parent._parent._automation.CompareElements(curElement, itemElement) != 0)
+                                        {
+                                            isWindowElement = true;
+                                            break;
+                                        }
+                                        else if (isItemElement(curElement))
+                                        {
+                                            foundElementAncestors.Add(curElement);
+                                        }
+                                    }
+
+                                    if (isWindowElement && foundElementAncestors.Count > 0)
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (foundElementAncestors.Count == 0)
+                            {
+                                // Still found none
+                                // Done!
+                                return;
+                            }
+
+                            foundElementAncestors.Reverse();
+
+                            var curLevel = 0;
+                            foreach (var cur in foundElementAncestors)
+                            {
+                                ++curLevel;
+                                if (cur.CachedIsOffscreen == 0)
+                                {
+                                    // If item1 is on-screen
+                                    // Enumerate backward/forward from item1
+                                    IUIAutomationElement frontElement;
+                                    for (
+                                        frontElement =
+                                            _walker.GetPreviousSiblingElementBuildCache(cur,
+                                                _parent._parent._cacheRequest);
+                                        frontElement != null && frontElement.CachedIsOffscreen == 0;
+                                        frontElement =
+                                            _walker.GetPreviousSiblingElementBuildCache(frontElement,
+                                                _parent._parent._cacheRequest))
+                                    {
+                                        // Enumerate from level2 (forward+backward, forward)
+                                        _parent._result.Add(frontElement);
+                                        AddContainerItems2(frontElement, curLevel + 1);
+                                    }
+
+                                    // descendant of pre-item1 may be on-screen
+                                    // pre-foundElementAncestors[0] if item1 is off-screen
+                                    // pre-frontElement if item1 is on-screen
+                                    if ((curLevel == 1 && frontElement != null) || curLevel > 1)
+                                    {
+                                        var preItem = curLevel == 1
+                                            ? frontElement
+                                            : _walker.GetPreviousSiblingElementBuildCache(
+                                                foundElementAncestors[0], _parent._parent._cacheRequest);
+                                        var j = 1;
+                                        // If previous item1 is off-screen
+                                        //  If last item2 is off-screen
+                                        //          ...
+                                        for (var cur2 = preItem;
+                                            cur2 != null;
+                                            cur2 = _walker.GetLastChildElementBuildCache(cur2,
+                                                _parent._parent._cacheRequest), ++j)
+                                        {
+                                            if (cur2.CachedIsOffscreen == 0)
+                                            {
+                                                //      Enumerate backward from item2
+                                                for (var curElement = cur2;
+                                                    curElement != null && curElement.CachedIsOffscreen == 0;
+                                                    curElement = _walker.GetPreviousSiblingElementBuildCache(curElement,
+                                                        _parent._parent._cacheRequest))
+                                                {
+                                                    _parent._result.Add(curElement);
+                                                    AddContainerItems2(curElement, j + 1);
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    for (var curElement = cur;
+                                        curElement != null && curElement.CachedIsOffscreen == 0;
+                                        curElement =
+                                            _walker.GetNextSiblingElementBuildCache(curElement,
+                                                _parent._parent._cacheRequest))
+                                    {
+                                        _parent._result.Add(curElement);
+                                        AddContainerItems2(curElement, curLevel + 1);
+                                    }
+
+                                    break;
+                                }
+                                else
+                                {
+                                    // descendant of post-item1 may be on-screen
+                                    for (var curElement = _walker.GetNextSiblingElementBuildCache(
+                                            cur, _parent._parent._cacheRequest);
+                                        curElement != null && curElement.CachedIsOffscreen == 0;
+                                        curElement = _walker.GetNextSiblingElementBuildCache(
+                                            curElement, _parent._parent._cacheRequest))
+                                    {
+                                        _parent._result.Add(curElement);
+                                        AddContainerItems2(curElement, curLevel + 1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // TODO: enabled?
+                }
+            }
+
+
         }
     }
 }
