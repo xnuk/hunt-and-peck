@@ -58,7 +58,7 @@ namespace hap.Services
         private readonly IUIAutomation _automation;
 
         private readonly IUIAutomationTreeWalker _treeWalker;
-        
+
         private readonly IUIAutomationCondition _accessibleCondition;
 
         private readonly IUIAutomationCacheRequest _cacheRequest;
@@ -181,284 +181,216 @@ namespace hap.Services
             var result = new List<IUIAutomationElement>();
 
             Action<IUIAutomationElement> addElements = null;
-            Action<IUIAutomationElement, bool> addContainerItems = null;
 
-            addElements = element =>
+            // TODO: wrap in method
+            Func<IUIAutomationElement, bool> isItemElement = element => s_containerItemPropertyIds.Any(
+                propertyId => (bool)element.GetCachedPropertyValue(propertyId));
+
+            // Assume itemElement is on-screen,
+            // Add its on-screen subitems including itself.
+            Func<IUIAutomationElement, IUIAutomationElement> addSubItems = null;
+            addSubItems = itemElement =>
             {
-                result.Add(element);
-
-                if (s_nonContainerControlTypeIds.Contains(element.CachedControlType) ||
-                    s_containerPropertyIds.All(propertyId => !(bool) element.GetCachedPropertyValue(propertyId)))
-                {
-                    GetElements(element.FindAllBuildCache(TreeScope.TreeScope_Children, _accessibleCondition, _cacheRequest))
-                        .Apply(child => addElements(child));
-                }
-                else
-                {
-                    addContainerItems(element, false);
-                }
-            };
-
-            // Enumerate on-screen items
-            // Typical container structure (list or tree)
-            //     (Header)
-            //     item
-            //         parts of item
-            //     item
-            //         item
-            //             parts of item
-            //     ....
-            //     (Footer)
-            // Bidirectional recursive enumeration
-            // Example:
-            //     container
-            //         item1 @ level1
-            //             item2 @ level2
-            //                 item3 @ level3 (on-screen)
-            Func<IUIAutomationElement, bool> isItemElement = elem => s_containerItemPropertyIds.Any(
-                propertyId => (bool)elem.GetCachedPropertyValue(propertyId));
-
-            addContainerItems = (itemElement, itemLevel) =>
-            {
-                if (itemLevel && itemElement.CachedIsEnabled != 0)
+                if (itemElement.CachedIsEnabled != 0)
                 {
                     result.Add(itemElement);
                 }
 
+                // Assume structure
+                //  (Header)
+                //  item(s)
+                //  (Footer)
                 var elementIds = new HashSet<string>();
-                Func<IUIAutomationElement, bool> addNewElement = elem => elementIds.Add(
-                    string.Join(".", from id in (int[])elem.GetRuntimeId() select id.ToString()));
+                Func<IUIAutomationElement, bool> addNewElement = element => elementIds.Add(
+                    string.Join(".", from subId in (int[])element.GetRuntimeId() select subId.ToString()));
+                Func<IEnumerable<IUIAutomationElement>, IUIAutomationElement> findFirstItemAndNonItems = elements =>
+                    elements.TakeWhile(element => element.CachedIsOffscreen == 0 && addNewElement(element))
+                            .FirstOrDefault(element =>
+                            {
+                                if (isItemElement(element))
+                                {
+                                    // Found an on-screen item
+                                    return true;
+                                }
+                                if (element.CachedIsEnabled != 0)
+                                {
+                                    // Find non-item elements
+                                    addElements(element);
+                                }
+                                return false;
+                            });
 
-                // Recursively enumerate on-screen elements forwards
-                IUIAutomationElement itemFoundFront = null;
-                GetNextSiblingElementsBuildCache(_treeWalker.GetFirstChildElementBuildCache(
-                        itemElement, _cacheRequest))
-                    .TakeWhile(e => e.CachedIsOffscreen == 0 && addNewElement(e))
-                    .TakeWhile(curElement =>
-                    {
-                        if (!isItemElement(curElement))
-                        {
-                            return true;
-                        }
-                        // Found an on-screen item
-                        // Break!
-                        itemFoundFront = curElement;
-                        return false;
-                    })
-                    .Apply(curElement =>
-                    {
-                        if (curElement.CachedIsEnabled != 0)
-                        {
-                            // Find non-item elements
-                            addElements(curElement);
-                        }
-                    });
+                // Find an on-screen item from front
+                var itemFoundFront = findFirstItemAndNonItems(
+                    EnumNextSiblingElementsBuildCache(_treeWalker.GetFirstChildElementBuildCache(
+                        itemElement, _cacheRequest)));
 
-                // Recursively enumerate on-screen elements backwards
-                IUIAutomationElement itemFoundBack = null;
-                GetPreviousSiblingElementsBuildCache(_treeWalker.GetLastChildElementBuildCache(
-                        itemElement, _cacheRequest))
-                    .TakeWhile(e => e.CachedIsOffscreen == 0 && addNewElement(e))
-                    .TakeWhile(curElement =>
-                    {
-                        if (!isItemElement(curElement))
-                        {
-                            return true;
-                        }
-                        // Found an on-screen item
-                        // Break!
-                        itemFoundBack = curElement;
-                        return false;
-                    })
-                    .Apply(curElement =>
-                    {
-                        if (curElement.CachedIsEnabled != 0)
-                        {
-                            // Find non-item elements
-                            addElements(curElement);
-                        }
-                    });
+                // Find an on-screen item from back
+                var itemFoundBack = findFirstItemAndNonItems(
+                    EnumPreviousSiblingElementsBuildCache(_treeWalker.GetLastChildElementBuildCache(
+                        itemElement, _cacheRequest)));
 
                 if (itemFoundFront != null && itemFoundBack != null)
                 {
-                    // Found item in both
-                    // Recursively Enumerate all!
-                    GetElements(itemElement.FindAllBuildCache(TreeScope.TreeScope_Children,
+                    // Found item from both, add all children
+                    EnumElementArray(itemElement.FindAllBuildCache(TreeScope.TreeScope_Children,
                             _automation.CreateTrueCondition(), _cacheRequest))
-                        .Apply(curItem => addContainerItems(curItem, true));
+                        .Apply(item => addSubItems(item));
                 }
                 else if (itemFoundFront != null)
                 {
-                    // Found item in forward phase
-                    // Recursively Enumerate forward
-                    GetNextSiblingElementsBuildCache(itemFoundFront)
-                        .TakeWhile(e => e.CachedIsOffscreen == 0)
-                        .Apply(curItem => addContainerItems(curItem, true));
+                    // Add children from front
+                    EnumNextSiblingElementsBuildCache(itemFoundFront)
+                        .TakeWhile(element => element.CachedIsOffscreen == 0)
+                        .Apply(item => addSubItems(item));
                 }
-                else if (!itemLevel && itemFoundBack != null)
+
+                return itemFoundBack;
+            };
+
+            // Add on-screen items of a typical list or tree, including itself.
+            Action<IUIAutomationElement> addContainerItems = containerElement =>
+            {
+                // TODO: Scroll pattern heuristic
+
+                // Children at front may be off-screen, check from back
+                var itemFoundBack = addSubItems(containerElement);
+                List<IUIAutomationElement> itemFoundAncestors = null;
+
+                if (itemFoundBack != null)
                 {
-                    // Found item in backward phase
-                    // Recursively Enumerate backward
-                    IUIAutomationElement frontElement = null;
-                    GetPreviousSiblingElementsBuildCache(itemFoundBack)
-                        .TakeWhile(
-                            e =>
-                            {
-                                if (e.CachedIsOffscreen == 0)
-                                {
-                                    return true;
-                                }
-                                frontElement = e;
-                                return false;
-                            })
-                        .Apply(curElement => addContainerItems(curElement, true));
-                    
-                    // descendant of pre-item1 may be on-screen
-                    if (frontElement != null)
-                    {
-                        for (var cur2 = frontElement;
-                            cur2 != null;
-                            cur2 = _treeWalker.GetLastChildElementBuildCache(cur2, _cacheRequest))
-                        {
-                            if (cur2.CachedIsOffscreen == 0)
-                            {
-                                // Enumerate backward from item2
-                                GetPreviousSiblingElementsBuildCache(cur2)
-                                    .TakeWhile(
-                                        e => e.CachedIsOffscreen == 0)
-                                    .Apply(curElement => addContainerItems(curElement, true));
-                                break;
-                            }
-                        }
-                    }
+                    itemFoundAncestors = new List<IUIAutomationElement> { itemFoundBack };
                 }
-                else if (!itemLevel)
+                else
                 {
-                    // Search screen diagonally to find an on-screen item, e.g. item3
-                    Func<tagPOINT, List<IUIAutomationElement>> getItemAncestorsFromPoint = point =>
-                    {
-                        var elem = _automation.ElementFromPointBuildCache(point, _cacheRequest);
-                        if (elem == null)
-                        {
-                            return null;
-                        }
-
-                        var itemAncestors = new List<IUIAutomationElement>();
-                        var isItemDescendant = false;
-
-                        for (var curElement = elem;
-                            curElement != null;
-                            curElement = _treeWalker.GetParentElementBuildCache(curElement, _cacheRequest))
-                        {
-                            if (_automation.CompareElements(curElement, itemElement) != 0)
-                            {
-                                isItemDescendant = true;
-                                break;
-                            }
-                            else if (isItemElement(curElement))
-                            {
-                                itemAncestors.Add(curElement);
-                            }
-                        }
-
-                        if (isItemDescendant && itemAncestors.Count > 0)
-                        {
-                            itemAncestors.Reverse();
-                            return itemAncestors;
-                        }
-
-                        return null;
-                    };
-
-                    List<IUIAutomationElement> foundElementAncestors = null;
-                    var boundRect = itemElement.CurrentBoundingRectangle;
+                    // Scan screen diagonally to find an on-screen item
+                    var boundRect = containerElement.CurrentBoundingRectangle;
                     var delta = 8.0 / (boundRect.right - boundRect.left);
 
                     for (double t = 0; t < 1.0; t += delta)
                     {
-                        tagPOINT p;
-                        p.x = (int)Math.Floor(
+                        tagPOINT point;
+                        point.x = (int)Math.Floor(
                             boundRect.left + t * (boundRect.right - boundRect.left));
-                        p.y = (int)Math.Floor(
+                        point.y = (int)Math.Floor(
                             boundRect.top + t * (boundRect.bottom - boundRect.top));
 
-                        foundElementAncestors = getItemAncestorsFromPoint(p);
-                        if (foundElementAncestors != null)
+                        var foundElement = _automation.ElementFromPointBuildCache(point, _cacheRequest);
+                        if (foundElement == null)
                         {
+                            continue;
+                        }
+
+                        // Check foundElement is a descendant of container
+                        // Retrieve ancestor items
+                        var isContainerDescendant = false;
+                        var itemAncestors = new List<IUIAutomationElement>();
+
+                        for (var curParent = foundElement;
+                            curParent != null;
+                            curParent = _treeWalker.GetParentElementBuildCache(curParent, _cacheRequest))
+                        {
+                            if (_automation.CompareElements(curParent, containerElement) != 0)
+                            {
+                                isContainerDescendant = true;
+                                break;
+                            }
+                            else if (isItemElement(curParent))
+                            {
+                                itemAncestors.Add(curParent);
+                            }
+                        }
+
+                        if (isContainerDescendant && itemAncestors.Count > 0)
+                        {
+                            itemAncestors.Reverse();
+                            itemFoundAncestors = itemAncestors;
                             break;
                         }
                     }
+                }
 
-                    if (foundElementAncestors == null)
+                if (itemFoundAncestors == null)
+                {
+                    // Give up
+                    return;
+                }
+
+                var itemLevel = 0;
+                foreach (var itemAncestor in itemFoundAncestors)
+                {
+                    ++itemLevel;
+                    if (itemAncestor.CachedIsOffscreen == 0)
                     {
-                        // Still found none
-                        // Done!
-                        return;
-                    }
-
-                    var curLevel = 0;
-                    foreach (var cur in foundElementAncestors)
-                    {
-                        ++curLevel;
-                        if (cur.CachedIsOffscreen == 0)
-                        {
-                            // If item1 is on-screen
-                            // Enumerate backward/forward from item1
-                            IUIAutomationElement frontElement = null;
-                            GetPreviousSiblingElementsBuildCache(
-                                    _treeWalker.GetPreviousSiblingElementBuildCache(cur, _cacheRequest))
-                                .TakeWhile(
-                                    e =>
-                                    {
-                                        if (e.CachedIsOffscreen == 0)
-                                        {
-                                            return true;
-                                        }
-                                        frontElement = e;
-                                        return false;
-                                    })
-                                .Apply(curElement => addContainerItems(curElement, true)); // Enumerate from level2 (forward+backward, forward)
-
-                            // descendant of pre-item1 may be on-screen
-                            // pre-foundElementAncestors[0] if item1 is off-screen
-                            // pre-frontElement if item1 is on-screen
-                            if (curLevel == 1 && frontElement != null || curLevel > 1)
-                            {
-                                var preItem = curLevel == 1
-                                    ? frontElement
-                                    : _treeWalker.GetPreviousSiblingElementBuildCache(foundElementAncestors[0], _cacheRequest);
-                                // If previous item1 is off-screen
-                                //  If last item2 is off-screen
-                                //          ...
-                                for (var cur2 = preItem;
-                                    cur2 != null;
-                                    cur2 = _treeWalker.GetLastChildElementBuildCache(cur2, _cacheRequest))
+                        // Find item backward from itemAncestor
+                        var itemFirstOffscreen = EnumPreviousSiblingElementsBuildCache(
+                                _treeWalker.GetPreviousSiblingElementBuildCache(itemAncestor, _cacheRequest))
+                            .FirstOrDefault(
+                                item =>
                                 {
-                                    if (cur2.CachedIsOffscreen == 0)
+                                    if (item.CachedIsOffscreen == 0)
                                     {
-                                        //      Enumerate backward from item2
-                                        GetPreviousSiblingElementsBuildCache(cur2)
-                                            .TakeWhile(e => e.CachedIsOffscreen == 0)
-                                            .Apply(curElement => addContainerItems(curElement, true));
-                                        break;
+                                        addSubItems(item);
+                                        return false;
                                     }
+                                    return true;
+                                });
+
+                        // Descendant of...
+                        //  itemFirstOffscreen if foundItemAncestors[0] is on-screen
+                        //  previous sibling of foundItemAncestors[0] otherwise
+                        // ...may be on-screen
+                        if (itemLevel == 1 && itemFirstOffscreen != null || itemLevel > 1)
+                        {
+                            var itemOffscreen = itemLevel == 1
+                                ? itemFirstOffscreen
+                                : _treeWalker.GetPreviousSiblingElementBuildCache(itemFoundAncestors[0], _cacheRequest);
+                            // Should be one of last childs
+                            for (var curChild = itemOffscreen;
+                                curChild != null;
+                                curChild = _treeWalker.GetLastChildElementBuildCache(curChild, _cacheRequest))
+                            {
+                                if (curChild.CachedIsOffscreen == 0)
+                                {
+                                    // Find item backward from curChild
+                                    EnumPreviousSiblingElementsBuildCache(curChild)
+                                        .TakeWhile(item => item.CachedIsOffscreen == 0)
+                                        .Apply(item => addSubItems(item));
+                                    break;
                                 }
                             }
+                        }
 
-                            GetNextSiblingElementsBuildCache(cur)
-                                .TakeWhile(e => e.CachedIsOffscreen == 0)
-                                .Apply(curElement => addContainerItems(curElement, true));
-                            break;
-                        }
-                        else
-                        {
-                            // descendant of post-item1 may be on-screen
-                            GetNextSiblingElementsBuildCache(
-                                    _treeWalker.GetNextSiblingElementBuildCache(cur, _cacheRequest))
-                                .TakeWhile(e => e.CachedIsOffscreen == 0)
-                                .Apply(curElement => addContainerItems(curElement, true));
-                        }
+                        // Find item forward from itemAncestor
+                        EnumNextSiblingElementsBuildCache(itemAncestor)
+                            .TakeWhile(item => item.CachedIsOffscreen == 0)
+                            .Apply(item => addSubItems(item));
+                        break;
                     }
+                    else
+                    {
+                        // Siblings next to itemAncestor may be on-screen
+                        EnumNextSiblingElementsBuildCache(
+                                _treeWalker.GetNextSiblingElementBuildCache(itemAncestor, _cacheRequest))
+                            .TakeWhile(item => item.CachedIsOffscreen == 0)
+                            .Apply(item => addSubItems(item));
+                    }
+                }
+            };
+
+            addElements = element =>
+            {
+                if (s_nonContainerControlTypeIds.Contains(element.CachedControlType) ||
+                    s_containerPropertyIds.All(propertyId => !(bool)element.GetCachedPropertyValue(propertyId)))
+                {
+                    result.Add(element);
+                    EnumElementArray(element.FindAllBuildCache(TreeScope.TreeScope_Children, _accessibleCondition, _cacheRequest))
+                        .Apply(child => addElements(child));
+                }
+                else
+                {
+                    // A container may have a large number of off-screen elements.
+                    addContainerItems(element);
                 }
             };
 
@@ -466,7 +398,10 @@ namespace hap.Services
             return result;
         }
 
-        private static IEnumerable<IUIAutomationElement> GetElements(IUIAutomationElementArray elements)
+        /// <summary>
+        /// Enumerates the array of elements
+        /// </summary>
+        private static IEnumerable<IUIAutomationElement> EnumElementArray(IUIAutomationElementArray elements)
         {
             for (var i = 0; i < elements.Length; ++i)
             {
@@ -474,7 +409,10 @@ namespace hap.Services
             }
         }
 
-        private IEnumerable<IUIAutomationElement> GetPreviousSiblingElementsBuildCache(IUIAutomationElement element)
+        /// <summary>
+        /// Enumerates siblings previous to the element, including itself
+        /// </summary>
+        private IEnumerable<IUIAutomationElement> EnumPreviousSiblingElementsBuildCache(IUIAutomationElement element)
         {
             for (var curElement = element;
                 curElement != null;
@@ -484,7 +422,10 @@ namespace hap.Services
             }
         }
 
-        private IEnumerable<IUIAutomationElement> GetNextSiblingElementsBuildCache(IUIAutomationElement element)
+        /// <summary>
+        /// Enumerates siblings next to the element, including itself
+        /// </summary>
+        private IEnumerable<IUIAutomationElement> EnumNextSiblingElementsBuildCache(IUIAutomationElement element)
         {
             for (var curElement = element;
                 curElement != null;
@@ -505,14 +446,14 @@ namespace hap.Services
         {
             try
             {
-                var invokePattern = (IUIAutomationInvokePattern) automationElement.GetCachedPattern(
+                var invokePattern = (IUIAutomationInvokePattern)automationElement.GetCachedPattern(
                     UIA_PatternIds.UIA_InvokePatternId);
                 if (invokePattern != null)
                 {
                     return new UiAutomationInvokeHint(owningWindow, invokePattern, hintBounds);
                 }
 
-                var togglePattern = (IUIAutomationTogglePattern) automationElement.GetCachedPattern(
+                var togglePattern = (IUIAutomationTogglePattern)automationElement.GetCachedPattern(
                     UIA_PatternIds.UIA_TogglePatternId);
                 if (togglePattern != null)
                 {
@@ -527,7 +468,7 @@ namespace hap.Services
                 // TODO: noncontainer
                 // TODO: focus part of item?
                 var isContainer = s_containerPropertyIds.Any(
-                    propertyId => (bool) automationElement.GetCachedPropertyValue(propertyId));
+                    propertyId => (bool)automationElement.GetCachedPropertyValue(propertyId));
                 if (isContainer)
                 {
                     return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
@@ -559,7 +500,7 @@ namespace hap.Services
                 try
                 {
                     var pattern = automationElement.GetCurrentPattern(pn.Key);
-                    if(pattern != null)
+                    if (pattern != null)
                     {
                         programmaticNames.Add(pn.Value);
                     }
