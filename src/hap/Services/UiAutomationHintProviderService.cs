@@ -16,29 +16,31 @@ namespace hap.Services
     internal class UiAutomationHintProviderService : IHintProviderService, IDebugHintProviderService
     {
         // TODO: wrap in method
-        private static readonly int[] s_containerPropertyIds = new int[]
+        private static readonly int[] s_containerPropertyIds =
         {
             UIA_PropertyIds.UIA_IsGridPatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsItemContainerPatternAvailablePropertyId,
-            UIA_PropertyIds.UIA_IsMultipleViewPatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsScrollPatternAvailablePropertyId,
-            UIA_PropertyIds.UIA_IsSelectionPatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsSpreadsheetPatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsTablePatternAvailablePropertyId
         };
 
-        private static readonly int[] s_nonContainerControlTypeIds = new int[]
+        private static readonly int[] s_nonContainerControlTypeIds =
         {
+            UIA_ControlTypeIds.UIA_ComboBoxControlTypeId,
             UIA_ControlTypeIds.UIA_CalendarControlTypeId,
             UIA_ControlTypeIds.UIA_DocumentControlTypeId,
             UIA_ControlTypeIds.UIA_EditControlTypeId,
+            UIA_ControlTypeIds.UIA_GroupControlTypeId,
+            UIA_ControlTypeIds.UIA_MenuControlTypeId,
             UIA_ControlTypeIds.UIA_PaneControlTypeId,
             UIA_ControlTypeIds.UIA_TabControlTypeId,
             UIA_ControlTypeIds.UIA_SliderControlTypeId,
             UIA_ControlTypeIds.UIA_SpinnerControlTypeId,
+            UIA_ControlTypeIds.UIA_SplitButtonControlTypeId
         };
 
-        private static readonly int[] s_containerItemPropertyIds = new int[]
+        private static readonly int[] s_containerItemPropertyIds =
         {
             UIA_PropertyIds.UIA_IsExpandCollapsePatternAvailablePropertyId,
             UIA_PropertyIds.UIA_IsGridItemPatternAvailablePropertyId,
@@ -48,7 +50,7 @@ namespace hap.Services
             UIA_PropertyIds.UIA_IsTableItemPatternAvailablePropertyId
         };
 
-        private static readonly int[] s_noFocusControlTypeIds = new int[]
+        private static readonly int[] s_noFocusControlTypeIds =
         {
             UIA_ControlTypeIds.UIA_GroupControlTypeId,
             UIA_ControlTypeIds.UIA_PaneControlTypeId,
@@ -59,7 +61,7 @@ namespace hap.Services
 
         private readonly IUIAutomationTreeWalker _treeWalker;
 
-        private readonly IUIAutomationCondition _accessibleCondition;
+        private readonly IUIAutomationCondition _automationCondition;
 
         private readonly IUIAutomationCacheRequest _cacheRequest;
 
@@ -67,11 +69,16 @@ namespace hap.Services
         {
             _automation = new CUIAutomation();
 
-            _treeWalker = _automation.RawViewWalker;
+            var baseCondition = _automation.CreateAndConditionFromArray(new[]
+            {
+                _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsControlElementPropertyId, true),
+                _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true)
+            });
 
-            _accessibleCondition = _automation.CreateAndCondition(
-                    _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true),
-                    _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsOffscreenPropertyId, false));
+            _treeWalker = _automation.CreateTreeWalker(baseCondition);
+
+            _automationCondition = _automation.CreateAndCondition(baseCondition,
+                _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsOffscreenPropertyId, false));
 
             _cacheRequest = _automation.CreateCacheRequest();
             foreach (var propertyId in s_containerPropertyIds)
@@ -82,8 +89,9 @@ namespace hap.Services
             {
                 _cacheRequest.AddProperty(propertyId);
             }
-            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsEnabledPropertyId);
             _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsOffscreenPropertyId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_ScrollHorizontalViewSizePropertyId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_ScrollVerticalViewSizePropertyId);
             _cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
             _cacheRequest.AddPattern(UIA_PatternIds.UIA_InvokePatternId);
             _cacheRequest.AddPattern(UIA_PatternIds.UIA_TogglePatternId);
@@ -191,10 +199,7 @@ namespace hap.Services
             Func<IUIAutomationElement, IUIAutomationElement> addSubItems = null;
             addSubItems = itemElement =>
             {
-                if (itemElement.CachedIsEnabled != 0)
-                {
-                    result.Add(itemElement);
-                }
+                result.Add(itemElement);
 
                 // Assume structure
                 //  (Header)
@@ -212,11 +217,8 @@ namespace hap.Services
                                     // Found an on-screen item
                                     return true;
                                 }
-                                if (element.CachedIsEnabled != 0)
-                                {
-                                    // Find non-item elements
-                                    addElements(element);
-                                }
+                                // Find non-item elements
+                                addElements(element);
                                 return false;
                             });
 
@@ -234,8 +236,10 @@ namespace hap.Services
                 {
                     // Found item from both, add all children
                     EnumElementArray(itemElement.FindAllBuildCache(TreeScope.TreeScope_Children,
-                            _automation.CreateTrueCondition(), _cacheRequest))
+                            _treeWalker.condition, _cacheRequest))
                         .Apply(item => addSubItems(item));
+
+                    return itemElement;
                 }
                 else if (itemFoundFront != null)
                 {
@@ -243,6 +247,8 @@ namespace hap.Services
                     EnumNextSiblingElementsBuildCache(itemFoundFront)
                         .TakeWhile(element => element.CachedIsOffscreen == 0)
                         .Apply(item => addSubItems(item));
+
+                    return itemElement;
                 }
 
                 return itemFoundBack;
@@ -251,20 +257,24 @@ namespace hap.Services
             // Add on-screen items of a typical list or tree, including itself.
             Action<IUIAutomationElement> addContainerItems = containerElement =>
             {
-                // TODO: Scroll pattern heuristic
-
-                // Children at front may be off-screen, check from back
-                var itemFoundBack = addSubItems(containerElement);
+                var itemFound = addSubItems(containerElement);
                 List<IUIAutomationElement> itemFoundAncestors = null;
 
-                if (itemFoundBack != null)
+                if (itemFound == containerElement)
                 {
-                    itemFoundAncestors = new List<IUIAutomationElement> { itemFoundBack };
+                    // Found all children
+                    return;
+                }
+                else if (itemFound != null)
+                {
+                    // Children at front may be off-screen, check from back
+                    itemFoundAncestors = new List<IUIAutomationElement> { itemFound };
                 }
                 else
                 {
                     // Scan screen diagonally to find an on-screen item
                     var boundRect = containerElement.CurrentBoundingRectangle;
+                    // TODO: adjust
                     var delta = 8.0 / (boundRect.right - boundRect.left);
 
                     for (double t = 0; t < 1.0; t += delta)
@@ -345,7 +355,7 @@ namespace hap.Services
                             var itemOffscreen = itemLevel == 1
                                 ? itemFirstOffscreen
                                 : _treeWalker.GetPreviousSiblingElementBuildCache(itemFoundAncestors[0], _cacheRequest);
-                            // Should be one of last childs
+                            // One of last childs should be on-screen
                             for (var curChild = itemOffscreen;
                                 curChild != null;
                                 curChild = _treeWalker.GetLastChildElementBuildCache(curChild, _cacheRequest))
@@ -378,13 +388,41 @@ namespace hap.Services
                 }
             };
 
+            var level = 0;
             addElements = element =>
             {
-                if (s_nonContainerControlTypeIds.Contains(element.CachedControlType) ||
-                    s_containerPropertyIds.All(propertyId => !(bool)element.GetCachedPropertyValue(propertyId)))
+                ++level;
+                var sw = new Stopwatch();
+                sw.Start();
+
+                Func<IUIAutomationElement, bool> isLargeContainer = element2 =>
+                {
+                    if (s_nonContainerControlTypeIds.Contains(element2.CachedControlType))
+                    {
+                        return false;
+                    }
+
+                    if (s_containerPropertyIds.All(propertyId => !(bool) element2.GetCachedPropertyValue(propertyId)))
+                    {
+                        return false;
+                    }
+
+                    if (!(bool)element2.GetCachedPropertyValue(UIA_PropertyIds.UIA_IsScrollPatternAvailablePropertyId))
+                    {
+                        return false;
+                    }
+
+                    return (double)element2.GetCachedPropertyValue(UIA_PropertyIds.UIA_ScrollHorizontalViewSizePropertyId)
+                        * (double)element2.GetCachedPropertyValue(UIA_PropertyIds.UIA_ScrollVerticalViewSizePropertyId)
+                        / 10000.0 < 0.8;
+                };
+
+                var lc = isLargeContainer(element);
+
+                if (!lc)
                 {
                     result.Add(element);
-                    EnumElementArray(element.FindAllBuildCache(TreeScope.TreeScope_Children, _accessibleCondition, _cacheRequest))
+                    EnumElementArray(element.FindAllBuildCache(TreeScope.TreeScope_Children, _automationCondition, _cacheRequest))
                         .Apply(child => addElements(child));
                 }
                 else
@@ -392,6 +430,13 @@ namespace hap.Services
                     // A container may have a large number of off-screen elements.
                     addContainerItems(element);
                 }
+
+                --level;
+                sw.Stop();
+                Debug.Write(new string(' ', level*2));
+                if (lc)
+                    Debug.Write("Z");
+                Debug.WriteLine("{0} : {1} took {2} ms", string.Join(".", from subId in (int[])element.GetRuntimeId() select subId.ToString("X")), element.CurrentName, sw.ElapsedMilliseconds);
             };
 
             addElements(_automation.ElementFromHandleBuildCache(hWnd, _cacheRequest));
