@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Windows.Forms;
 using Caliburn.Micro;
 using hap.Models;
@@ -60,7 +61,12 @@ namespace hap.ViewModels
             if (session != null)
             {
                 var vm = _overlayFactory(session);
+
+                var sw = new Stopwatch();
+                sw.Start();
                 _windowManager.ShowWindow(vm);
+                sw.Stop();
+                Debug.WriteLine("ShowWindow took {0} ms", sw.ElapsedMilliseconds);
             }
         }
 

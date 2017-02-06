@@ -13,6 +13,16 @@ namespace hap.Services
 {
     internal class UiAutomationHintProviderService : IHintProviderService, IDebugHintProviderService
     {
+        // TODO: wrap in method
+        private static readonly int[] s_containerPropertyIds =
+        {
+            UIA_PropertyIds.UIA_IsGridPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsItemContainerPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsScrollPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsSpreadsheetPatternAvailablePropertyId,
+            UIA_PropertyIds.UIA_IsTablePatternAvailablePropertyId
+        };
+
         private static readonly int[] s_containerItemPropertyIds =
         {
             UIA_PropertyIds.UIA_IsExpandCollapsePatternAvailablePropertyId,
@@ -35,10 +45,17 @@ namespace hap.Services
 
         private readonly IUIAutomationCacheRequest _itemCacheRequest;
 
+        private static readonly int[] s_noFocusControlTypeIds =
+        {
+            UIA_ControlTypeIds.UIA_GroupControlTypeId,
+            UIA_ControlTypeIds.UIA_PaneControlTypeId,
+            UIA_ControlTypeIds.UIA_WindowControlTypeId
+        };
+
         public UiAutomationHintProviderService()
         {
             _automation = new CUIAutomation();
-
+            
             var conditionEnabledControl = _automation.CreateAndCondition(
                 _automation.ControlViewCondition,
                 _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true));
@@ -294,7 +311,7 @@ namespace hap.Services
             else
             {
                 // Scan screen diagonally to find an on-screen item
-                var boundRect = containerElement.CachedBoundingRectangle;
+                var boundRect = containerElement.CurrentBoundingRectangle;
                 // TODO: adjust
                 var delta = 8.0 / (boundRect.right - boundRect.left);
 
@@ -494,7 +511,6 @@ namespace hap.Services
             return itemFoundBack;
         }
 
-
         /// <summary>
         /// Decides whether <paramref name="element"/> is an item in a container using the cache.
         /// </summary>
@@ -502,7 +518,7 @@ namespace hap.Services
         {
             return s_containerItemPropertyIds.Any(propertyId => (bool) element.GetCachedPattern(propertyId));
         }
-
+        
         /// <summary>
         /// Creates a UI Automation element from the given automation element
         /// </summary>
@@ -510,16 +526,39 @@ namespace hap.Services
         /// <param name="hintBounds">The hint bounds</param>
         /// <param name="automationElement">The associated automation element</param>
         /// <returns>The created hint, else null if the hint could not be created</returns>
-        private UiAutomationHint CreateHint(IntPtr owningWindow, Rect hintBounds, IUIAutomationElement automationElement)
+        private Hint CreateHint(IntPtr owningWindow, Rect hintBounds, IUIAutomationElement automationElement)
         {
             try
             {
-                var pattern = (IUIAutomationInvokePattern) automationElement.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId);
-                if (pattern == null)
+                var invokePattern = (IUIAutomationInvokePattern)automationElement.GetCurrentPattern(
+                    UIA_PatternIds.UIA_InvokePatternId);
+                if (invokePattern != null)
                 {
-                    return null;
+                    return new UiAutomationInvokeHint(owningWindow, invokePattern, hintBounds);
                 }
-                return new UiAutomationHint(owningWindow, pattern, hintBounds);
+
+                var togglePattern = (IUIAutomationTogglePattern)automationElement.GetCurrentPattern(
+                    UIA_PatternIds.UIA_TogglePatternId);
+                if (togglePattern != null)
+                {
+                    return new UiAutomationToggleHint(owningWindow, togglePattern, hintBounds);
+                }
+
+                var isFocusable = automationElement.CurrentIsKeyboardFocusable != 0;
+                if (isFocusable && !s_noFocusControlTypeIds.Contains(automationElement.CurrentControlType))
+                {
+                    return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
+                }
+                // TODO: noncontainer
+                // TODO: focus part of item?
+                var isContainer = s_containerPropertyIds.Any(
+                    propertyId => (bool)automationElement.GetCurrentPropertyValue(propertyId));
+                if (isContainer)
+                {
+                    return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
+                }
+
+                return null;
             }
             catch (Exception)
             {
@@ -545,7 +584,7 @@ namespace hap.Services
                 try
                 {
                     var pattern = automationElement.GetCurrentPattern(pn.Key);
-                    if(pattern != null)
+                    if (pattern != null)
                     {
                         programmaticNames.Add(pn.Value);
                     }
