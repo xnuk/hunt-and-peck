@@ -98,6 +98,8 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="Extensions\IEnumerableTExtensions.cs" />
+    <Compile Include="Extensions\IUIAutomationElementArrayExtensions.cs" />
+    <Compile Include="Extensions\IUIAutomationTreeWalkerExtensions.cs" />
     <Compile Include="Extensions\RectExtensions.cs" />
     <Compile Include="Models\DebugHint.cs" />
     <Compile Include="Models\Hint.cs" />
