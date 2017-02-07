@@ -43,6 +43,10 @@ namespace hap.Services
 
         private readonly IUIAutomationTreeWalker _itemTreeWalker;
 
+        private readonly IUIAutomationCacheRequest _cacheRequest;
+
+        private readonly IUIAutomationCacheRequest _containerCacheRequest;
+
         private readonly IUIAutomationCacheRequest _itemCacheRequest;
 
         private static readonly int[] s_noFocusControlTypeIds =
@@ -95,11 +99,36 @@ namespace hap.Services
                 }.Select(id => _automation.CreatePropertyCondition(id, true)).ToArray())
             });
 
+            //_conditionContainer = _automation.CreateOrCondition(
+            //            _automation.CreatePropertyCondition(
+            //                UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_ListControlTypeId),
+            //            _automation.CreatePropertyCondition(
+            //                UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_TreeControlTypeId));
+
+            //_conditionContainer = _automation.CreatePropertyCondition(
+            //    UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_ListControlTypeId);
+
             _controlViewWalker = _automation.ControlViewWalker;
 
             _itemTreeWalker = _automation.CreateTreeWalker(conditionEnabledControl);
 
-            _itemCacheRequest = _automation.CreateCacheRequest();
+            _cacheRequest = _automation.CreateCacheRequest();
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_InvokePatternId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_TogglePatternId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsKeyboardFocusablePropertyId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_ControlTypePropertyId);
+            foreach (var propertyId in s_containerPropertyIds)
+            {
+                _cacheRequest.AddProperty(propertyId);
+            }
+
+            _containerCacheRequest = _cacheRequest.Clone();
+            _containerCacheRequest.AddPattern(UIA_PatternIds.UIA_ScrollPatternId);
+            _containerCacheRequest.AddProperty(UIA_PropertyIds.UIA_ScrollHorizontalViewSizePropertyId);
+            _containerCacheRequest.AddProperty(UIA_PropertyIds.UIA_ScrollVerticalViewSizePropertyId);
+
+            _itemCacheRequest = _cacheRequest.Clone();
             _itemCacheRequest.AddProperty(UIA_PropertyIds.UIA_IsOffscreenPropertyId);
             foreach (var propertyId in s_containerItemPropertyIds)
             {
@@ -161,7 +190,7 @@ namespace hap.Services
 
             foreach (var element in elements)
             {
-                var boundingRectObject = element.CurrentBoundingRectangle;
+                var boundingRectObject = element.CachedBoundingRectangle;
                 if ((boundingRectObject.right > boundingRectObject.left) && (boundingRectObject.bottom > boundingRectObject.top))
                 {
                     var niceRect = new Rect(new Point(boundingRectObject.left, boundingRectObject.top), new Point(boundingRectObject.right, boundingRectObject.bottom));
@@ -209,7 +238,12 @@ namespace hap.Services
             //{
             //    result.Add(elementArray.GetElement(i));
             //}
+            var sw = new Stopwatch();
+            sw.Start();
             AddElements(automationElement, result);
+            sw.Stop();
+            Debug.WriteLine("AddElements took {0} ms", sw.ElapsedMilliseconds);
+            Debug.WriteLine("Found {0} elements", result.Count);
 
             return result;
         }
@@ -221,18 +255,25 @@ namespace hap.Services
         {
             var element = automationElement;
 
-            var container = element.FindFirst(TreeScope.TreeScope_Descendants, _conditionContainer);
+            var sw = new Stopwatch();
+            sw.Start();
+            var container = element.FindFirstBuildCache(TreeScope.TreeScope_Descendants, _conditionContainer, _containerCacheRequest);
+            sw.Stop();
+            Debug.WriteLine("Line 248 took {0} ms", sw.ElapsedMilliseconds);
             if (container == null)
             {
-                result.AddRange(element.FindAll(
-                    TreeScope.TreeScope_Subtree, _conditionAccessibleControl).AsEnumerable());
+                sw.Restart();
+                result.AddRange(element.FindAllBuildCache(
+                    TreeScope.TreeScope_Subtree, _conditionAccessibleControl, _cacheRequest).AsEnumerable());
+                sw.Stop();
+                Debug.WriteLine("Line 254 took {0} ms", sw.ElapsedMilliseconds);
                 return;
             }
 
             var containerAncestors = new List<IUIAutomationElement>();
             for (var curParent = container;
                 _automation.CompareElements(curParent, element) == 0;
-                curParent = _controlViewWalker.GetParentElement(curParent))
+                curParent = _controlViewWalker.GetParentElementBuildCache(curParent, _cacheRequest))
             {
                 containerAncestors.Add(curParent);
             }
@@ -241,24 +282,27 @@ namespace hap.Services
 
             foreach (var l in Enumerable.Range(0, containerAncestors.Count - 1))
             {
-                var nextElem = _controlViewWalker.EnumerateChildren(containerAncestors[l])
+                result.AddRange(containerAncestors[l].FindAllBuildCache(
+                                TreeScope.TreeScope_Element, _conditionAccessibleControl, _cacheRequest).AsEnumerable());
+
+                var nextElem = _controlViewWalker.EnumerateChildrenBuildCache(containerAncestors[l], _cacheRequest)
                     .SkipWhile(curElem =>
                     {
                         if (_automation.CompareElements(curElem, containerAncestors[l + 1]) == 0)
                         {
-                            result.AddRange(curElem.FindAll(
-                                TreeScope.TreeScope_Subtree, _conditionAccessibleControl).AsEnumerable());
+                            sw.Restart();
+                            result.AddRange(curElem.FindAllBuildCache(
+                                TreeScope.TreeScope_Subtree, _conditionAccessibleControl, _cacheRequest).AsEnumerable());
+                            sw.Stop();
+                            Debug.WriteLine("Line 279 took {0} ms", sw.ElapsedMilliseconds);
                             return true;
                         }
-
-                        if (l + 1 == containerAncestors.Count - 1)
+                        else if (l + 1 == containerAncestors.Count - 1)
                         {
+                            sw.Restart();
                             AddContainerElements(containerAncestors[l + 1], result);
-                        }
-                        else
-                        {
-                            result.AddRange(curElem.FindAll(
-                                TreeScope.TreeScope_Element, _conditionAccessibleControl).AsEnumerable());
+                            sw.Stop();
+                            Debug.WriteLine("Line 289 took {0} ms", sw.ElapsedMilliseconds);
                         }
                         return false;
                     }).Skip(1).FirstOrDefault();
@@ -266,7 +310,7 @@ namespace hap.Services
                 if (nextElem == null)
                     continue;
 
-                foreach (var child in _controlViewWalker.EnumerateSiblingsFrom(nextElem))
+                foreach (var child in _controlViewWalker.EnumerateSiblingsFromBuildCache(nextElem, _cacheRequest))
                 {
                     AddElements(child, result);
                 }
@@ -285,13 +329,13 @@ namespace hap.Services
                 return;
             }
 
-            var scrollPattern = (IUIAutomationScrollPattern) containerElement.GetCurrentPattern(
+            var scrollPattern = (IUIAutomationScrollPattern) containerElement.GetCachedPattern(
                 UIA_PatternIds.UIA_ScrollPatternId);
 
-            if (scrollPattern.CurrentHorizontalViewSize * scrollPattern.CurrentVerticalViewSize / 10000.0 >= 0.8)
+            if (scrollPattern.CachedHorizontalViewSize * scrollPattern.CachedVerticalViewSize / 10000.0 >= 0.8)
             {
-                result.AddRange(containerElement.FindAll(TreeScope.TreeScope_Subtree,
-                    _conditionAccessibleControl).AsEnumerable());
+                result.AddRange(containerElement.FindAllBuildCache(TreeScope.TreeScope_Subtree,
+                    _conditionAccessibleControl, _cacheRequest).AsEnumerable());
                 return;
             }
 
@@ -311,7 +355,7 @@ namespace hap.Services
             else
             {
                 // Scan screen diagonally to find an on-screen item
-                var boundRect = containerElement.CurrentBoundingRectangle;
+                var boundRect = containerElement.CachedBoundingRectangle;
                 // TODO: adjust
                 var delta = 8.0 / (boundRect.right - boundRect.left);
 
@@ -487,8 +531,8 @@ namespace hap.Services
             if (itemFoundFront != null && itemFoundBack != null)
             {
                 // Found item from both, add all children
-                foreach (var item in itemElement.FindAll(TreeScope.TreeScope_Children, _conditionAccessibleControl)
-                    .AsEnumerable())
+                foreach (var item in itemElement.FindAllBuildCache(TreeScope.TreeScope_Children, 
+                    _conditionAccessibleControl, _itemCacheRequest).AsEnumerable())
                 {
                     AddContainerSubItems(item, result);
                 }
@@ -497,7 +541,7 @@ namespace hap.Services
             else if (itemFoundFront != null)
             {
                 // Add children from front
-                foreach (var item in _itemTreeWalker.EnumerateSiblingsFrom(itemFoundFront))
+                foreach (var item in _itemTreeWalker.EnumerateSiblingsFromBuildCache(itemFoundFront, _itemCacheRequest))
                 {
                     if (item.CachedIsOffscreen != 0)
                     {
@@ -530,29 +574,34 @@ namespace hap.Services
         {
             try
             {
-                var invokePattern = (IUIAutomationInvokePattern)automationElement.GetCurrentPattern(
+                var invokePattern = (IUIAutomationInvokePattern)automationElement.GetCachedPattern(
                     UIA_PatternIds.UIA_InvokePatternId);
                 if (invokePattern != null)
                 {
                     return new UiAutomationInvokeHint(owningWindow, invokePattern, hintBounds);
                 }
 
-                var togglePattern = (IUIAutomationTogglePattern)automationElement.GetCurrentPattern(
+                var togglePattern = (IUIAutomationTogglePattern)automationElement.GetCachedPattern(
                     UIA_PatternIds.UIA_TogglePatternId);
                 if (togglePattern != null)
                 {
                     return new UiAutomationToggleHint(owningWindow, togglePattern, hintBounds);
                 }
 
-                var isFocusable = automationElement.CurrentIsKeyboardFocusable != 0;
-                if (isFocusable && !s_noFocusControlTypeIds.Contains(automationElement.CurrentControlType))
+                var isFocusable = automationElement.CachedIsKeyboardFocusable != 0;
+                //if (isFocusable)
+                //{
+                //    return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
+                //}
+
+                if (isFocusable && !s_noFocusControlTypeIds.Contains(automationElement.CachedControlType))
                 {
                     return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
                 }
                 // TODO: noncontainer
                 // TODO: focus part of item?
                 var isContainer = s_containerPropertyIds.Any(
-                    propertyId => (bool)automationElement.GetCurrentPropertyValue(propertyId));
+                    propertyId => (bool)automationElement.GetCachedPropertyValue(propertyId));
                 if (isContainer)
                 {
                     return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
