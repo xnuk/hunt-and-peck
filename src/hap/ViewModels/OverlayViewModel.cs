@@ -1,4 +1,5 @@
-﻿using System.Windows.Input;
+﻿using System;
+using System.Windows.Input;
 using Caliburn.Micro;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -68,7 +69,7 @@ namespace hap.ViewModels
             {
                 Hints.Apply(x => x.Active = false);
 
-                var matching = Hints.Where(x => x.Label.StartsWith(value)).ToArray();
+                var matching = Hints.Where(x => x.Label.StartsWith(value, StringComparison.OrdinalIgnoreCase)).ToArray();
                 matching.Apply(x => x.Active = true);
 
                 if (matching.Count() == 1)

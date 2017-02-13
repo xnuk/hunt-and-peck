@@ -17,30 +17,16 @@ namespace hap.Services
         /// <returns>A list of hint strings</returns>
         public IList<string> GetHintStrings(int hintCount)
         {
-            var hintCharacters = new[] { 's', 'a', 'd', 'f', 'w', 'q', 'e', 'r', 'x', 'z', 'c', 'v' };
+            var hintCharacters = new[] { 'S', 'A', 'D', 'F', 'W', 'Q', 'E', 'R', 'X', 'Z', 'C', 'V' };
             var digitsNeeded = (int)Math.Ceiling(Math.Log(hintCount) / Math.Log(hintCharacters.Length));
 
-            var shortHintCount = Math.Floor((Math.Pow(hintCharacters.Length, digitsNeeded) - hintCount) / hintCharacters.Length);
-            var longHintCount = hintCount - shortHintCount;
-
             var hintStrings = new List<string>();
-
-            if (digitsNeeded > 1)
-            {
-                for (var i = 0; i < shortHintCount; ++i)
-                {
-                    hintStrings.Add(NumberToHintString(i, hintCharacters, digitsNeeded - 1));
-                }
-            }
-
-            var start = (int)(shortHintCount * hintCharacters.Length);
-            for (var i = start; i < (start + longHintCount); ++i)
+            for (var i = 0; i < hintCount; ++i)
             {
                 hintStrings.Add(NumberToHintString(i, hintCharacters, digitsNeeded));
             }
 
-            // Note that shuffle is lazy evaluated. Sigh.
-            return hintStrings.Shuffle().ToList();
+            return hintStrings.ToList();
         }
 
         /// <summary>
@@ -60,7 +46,7 @@ namespace hap.Services
             do
             {
                 var remainder = number % divisor;
-                hintString.Insert(0, characterSet[remainder]);
+                hintString.Append(characterSet[remainder]);
                 number -= remainder;
                 number /= (int)Math.Floor((double)divisor);
             } while (number > 0);
@@ -70,7 +56,7 @@ namespace hap.Services
             var length = hintString.Length;
             for (var i = 0; i < (noHintDigits - length); ++i)
             {
-                hintString.Insert(0, characterSet[0]);
+                hintString.Append(characterSet[0]);
             }
 
             return hintString.ToString();
