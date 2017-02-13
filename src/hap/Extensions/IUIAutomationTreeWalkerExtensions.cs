@@ -47,7 +47,7 @@ namespace hap.Extensions
         {
             for (var curElem = element;
                 curElem != null;
-                curElem = source.GetNextSiblingElement(element))
+                curElem = source.GetNextSiblingElement(curElem))
             {
                 yield return curElem;
             }
@@ -58,7 +58,7 @@ namespace hap.Extensions
         {
             for (var curElem = element;
                 curElem != null;
-                curElem = source.GetNextSiblingElementBuildCache(element, cacheRequest))
+                curElem = source.GetNextSiblingElementBuildCache(curElem, cacheRequest))
             {
                 yield return curElem;
             }
@@ -69,7 +69,7 @@ namespace hap.Extensions
         {
             for (var curElem = element;
                 curElem != null;
-                curElem = source.GetPreviousSiblingElementBuildCache(element, cacheRequest))
+                curElem = source.GetPreviousSiblingElementBuildCache(curElem, cacheRequest))
             {
                 yield return curElem;
             }

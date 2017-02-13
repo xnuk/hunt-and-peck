@@ -13,16 +13,6 @@ namespace hap.Services
 {
     internal class UiAutomationHintProviderService : IHintProviderService, IDebugHintProviderService
     {
-        // TODO: wrap in method
-        private static readonly int[] s_containerPropertyIds =
-        {
-            UIA_PropertyIds.UIA_IsGridPatternAvailablePropertyId,
-            UIA_PropertyIds.UIA_IsItemContainerPatternAvailablePropertyId,
-            UIA_PropertyIds.UIA_IsScrollPatternAvailablePropertyId,
-            UIA_PropertyIds.UIA_IsSpreadsheetPatternAvailablePropertyId,
-            UIA_PropertyIds.UIA_IsTablePatternAvailablePropertyId
-        };
-
         private static readonly int[] s_containerItemPropertyIds =
         {
             UIA_PropertyIds.UIA_IsExpandCollapsePatternAvailablePropertyId,
@@ -35,26 +25,37 @@ namespace hap.Services
 
         private readonly IUIAutomation _automation;
 
+        /// <summary>
+        /// Enabled and not Offscreen
+        /// </summary>
         private readonly IUIAutomationCondition _conditionAccessibleControl;
 
+        /// <summary>
+        /// Possibly large container
+        /// </summary>
         private readonly IUIAutomationCondition _conditionContainer;
 
         private readonly IUIAutomationTreeWalker _controlViewWalker;
 
+        /// <summary>
+        /// Traverse enabled control elements
+        /// </summary>
         private readonly IUIAutomationTreeWalker _itemTreeWalker;
 
+        /// <summary>
+        /// Prefetch properties and patterns for enumeration and showing hints
+        /// </summary>
         private readonly IUIAutomationCacheRequest _cacheRequest;
 
+        /// <summary>
+        /// Prefetch additionally for possibly large containers
+        /// </summary>
         private readonly IUIAutomationCacheRequest _containerCacheRequest;
 
+        /// <summary>
+        /// Prefetch additionally for container items
+        /// </summary>
         private readonly IUIAutomationCacheRequest _itemCacheRequest;
-
-        private static readonly int[] s_noFocusControlTypeIds =
-        {
-            UIA_ControlTypeIds.UIA_GroupControlTypeId,
-            UIA_ControlTypeIds.UIA_PaneControlTypeId,
-            UIA_ControlTypeIds.UIA_WindowControlTypeId
-        };
 
         public UiAutomationHintProviderService()
         {
@@ -99,15 +100,6 @@ namespace hap.Services
                 }.Select(id => _automation.CreatePropertyCondition(id, true)).ToArray())
             });
 
-            //_conditionContainer = _automation.CreateOrCondition(
-            //            _automation.CreatePropertyCondition(
-            //                UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_ListControlTypeId),
-            //            _automation.CreatePropertyCondition(
-            //                UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_TreeControlTypeId));
-
-            //_conditionContainer = _automation.CreatePropertyCondition(
-            //    UIA_PropertyIds.UIA_ControlTypePropertyId, UIA_ControlTypeIds.UIA_ListControlTypeId);
-
             _controlViewWalker = _automation.ControlViewWalker;
 
             _itemTreeWalker = _automation.CreateTreeWalker(conditionEnabledControl);
@@ -116,12 +108,12 @@ namespace hap.Services
             _cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
             _cacheRequest.AddPattern(UIA_PatternIds.UIA_InvokePatternId);
             _cacheRequest.AddPattern(UIA_PatternIds.UIA_TogglePatternId);
-            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_IsKeyboardFocusablePropertyId);
-            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_ControlTypePropertyId);
-            foreach (var propertyId in s_containerPropertyIds)
-            {
-                _cacheRequest.AddProperty(propertyId);
-            }
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_SelectionItemPatternId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_ExpandCollapsePatternId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_ValuePatternId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_ValueIsReadOnlyPropertyId);
+            _cacheRequest.AddPattern(UIA_PatternIds.UIA_RangeValuePatternId);
+            _cacheRequest.AddProperty(UIA_PropertyIds.UIA_RangeValueIsReadOnlyPropertyId);
 
             _containerCacheRequest = _cacheRequest.Clone();
             _containerCacheRequest.AddPattern(UIA_PatternIds.UIA_ScrollPatternId);
@@ -226,18 +218,6 @@ namespace hap.Services
             var result = new List<IUIAutomationElement>();
             var automationElement = _automation.ElementFromHandle(hWnd);
 
-            //var conditionControlView = _automation.ControlViewCondition;
-            //var conditionEnabled = _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsEnabledPropertyId, true);
-            //var enabledControlCondition = _automation.CreateAndCondition(conditionControlView, conditionEnabled);
-
-            //var conditionOnScreen = _automation.CreatePropertyCondition(UIA_PropertyIds.UIA_IsOffscreenPropertyId, false);
-            //var condition = _automation.CreateAndCondition(enabledControlCondition, conditionOnScreen);
-
-            //var elementArray = automationElement.FindAll(TreeScope.TreeScope_Descendants, condition);
-            //for (var i = 0; i < elementArray.Length; ++i)
-            //{
-            //    result.Add(elementArray.GetElement(i));
-            //}
             var sw = new Stopwatch();
             sw.Start();
             AddElements(automationElement, result);
@@ -254,22 +234,17 @@ namespace hap.Services
         private void AddElements(IUIAutomationElement automationElement, List<IUIAutomationElement> result)
         {
             var element = automationElement;
-
-            var sw = new Stopwatch();
-            sw.Start();
+            
             var container = element.FindFirstBuildCache(TreeScope.TreeScope_Descendants, _conditionContainer, _containerCacheRequest);
-            sw.Stop();
-            Debug.WriteLine("Line 248 took {0} ms", sw.ElapsedMilliseconds);
             if (container == null)
             {
-                sw.Restart();
+                // Find all if there's no container elements within
                 result.AddRange(element.FindAllBuildCache(
                     TreeScope.TreeScope_Subtree, _conditionAccessibleControl, _cacheRequest).AsEnumerable());
-                sw.Stop();
-                Debug.WriteLine("Line 254 took {0} ms", sw.ElapsedMilliseconds);
                 return;
             }
 
+            // Avoid finding all elements in a container element
             var containerAncestors = new List<IUIAutomationElement>();
             for (var curParent = container;
                 _automation.CompareElements(curParent, element) == 0;
@@ -280,37 +255,35 @@ namespace hap.Services
             containerAncestors.Add(element);
             containerAncestors.Reverse();
 
+            // For each ancestor, avoid children having the container as a descendant
             foreach (var l in Enumerable.Range(0, containerAncestors.Count - 1))
             {
                 result.AddRange(containerAncestors[l].FindAllBuildCache(
                                 TreeScope.TreeScope_Element, _conditionAccessibleControl, _cacheRequest).AsEnumerable());
 
-                var nextElem = _controlViewWalker.EnumerateChildrenBuildCache(containerAncestors[l], _cacheRequest)
-                    .SkipWhile(curElem =>
+                var nextChild = _controlViewWalker.EnumerateChildrenBuildCache(containerAncestors[l], _cacheRequest)
+                    .SkipWhile(child =>
                     {
-                        if (_automation.CompareElements(curElem, containerAncestors[l + 1]) == 0)
+                        if (_automation.CompareElements(child, containerAncestors[l + 1]) == 0)
                         {
-                            sw.Restart();
-                            result.AddRange(curElem.FindAllBuildCache(
+                            // child doesn't have the container
+                            result.AddRange(child.FindAllBuildCache(
                                 TreeScope.TreeScope_Subtree, _conditionAccessibleControl, _cacheRequest).AsEnumerable());
-                            sw.Stop();
-                            Debug.WriteLine("Line 279 took {0} ms", sw.ElapsedMilliseconds);
                             return true;
                         }
                         else if (l + 1 == containerAncestors.Count - 1)
                         {
-                            sw.Restart();
+                            // Finally find subitems in the container
                             AddContainerElements(containerAncestors[l + 1], result);
-                            sw.Stop();
-                            Debug.WriteLine("Line 289 took {0} ms", sw.ElapsedMilliseconds);
                         }
                         return false;
                     }).Skip(1).FirstOrDefault();
 
-                if (nextElem == null)
+                if (nextChild == null)
                     continue;
 
-                foreach (var child in _controlViewWalker.EnumerateSiblingsFromBuildCache(nextElem, _cacheRequest))
+                // We may find a container from here
+                foreach (var child in _controlViewWalker.EnumerateSiblingsFromBuildCache(nextChild, _cacheRequest))
                 {
                     AddElements(child, result);
                 }
@@ -320,6 +293,7 @@ namespace hap.Services
         /// <summary>
         /// Adds automation elements in the subtree of <paramref name="containerElement"/> to <paramref name="result"/>.
         /// </summary>
+        /// <param name="containerElement">kind of a list or tree.</param>
         private void AddContainerElements(IUIAutomationElement containerElement, List<IUIAutomationElement> result)
         {
             var accessibleControl = containerElement.FindAll(TreeScope.TreeScope_Element, _conditionAccessibleControl)
@@ -334,6 +308,7 @@ namespace hap.Services
 
             if (scrollPattern.CachedHorizontalViewSize * scrollPattern.CachedVerticalViewSize / 10000.0 >= 0.8)
             {
+                // It's faster to just find all elements in this case
                 result.AddRange(containerElement.FindAllBuildCache(TreeScope.TreeScope_Subtree,
                     _conditionAccessibleControl, _cacheRequest).AsEnumerable());
                 return;
@@ -349,17 +324,18 @@ namespace hap.Services
             }
             else if (itemFound != null)
             {
-                // Children at front may be off-screen, check from back
+                // Children at front may be off-screen, check backwards
                 itemFoundAncestors = new List<IUIAutomationElement> {itemFound};
             }
             else
             {
                 // Scan screen diagonally to find an on-screen item
                 var boundRect = containerElement.CachedBoundingRectangle;
-                // TODO: adjust
-                var delta = 8.0 / (boundRect.right - boundRect.left);
+                // t is quadratic for scalability and expect to find at small t
+                var delta0 = 1.0 / (boundRect.bottom - boundRect.top);
+                var delta = 0.0;
 
-                for (double t = 0; t < 1.0; t += delta)
+                for (double t = 0; t < 1.0; delta += delta0, t += delta)
                 {
                     tagPOINT point;
                     point.x = (int) Math.Floor(
@@ -491,7 +467,7 @@ namespace hap.Services
         /// <summary>
         /// Adds container items in the subtree of <paramref name="itemElement"/> to <paramref name="result"/>.
         /// </summary>
-        /// <returns></returns>
+        /// <returns><paramref name="itemElement"/> if all items are added, a top-level item element or null otherwise.</returns>
         private IUIAutomationElement AddContainerSubItems(IUIAutomationElement itemElement,
             List<IUIAutomationElement> result)
         {
@@ -560,7 +536,7 @@ namespace hap.Services
         /// </summary>
         private bool CachedIsItemElement(IUIAutomationElement element)
         {
-            return s_containerItemPropertyIds.Any(propertyId => (bool) element.GetCachedPattern(propertyId));
+            return s_containerItemPropertyIds.Any(propertyId => (bool) element.GetCachedPropertyValue(propertyId));
         }
         
         /// <summary>
@@ -587,26 +563,35 @@ namespace hap.Services
                 {
                     return new UiAutomationToggleHint(owningWindow, togglePattern, hintBounds);
                 }
+                
+                var selectPattern = (IUIAutomationSelectionItemPattern) automationElement.GetCachedPattern(
+                    UIA_PatternIds.UIA_SelectionItemPatternId);
+                if (selectPattern != null)
+                {
+                    return new UiAutomationSelectHint(owningWindow, selectPattern, hintBounds);
+                }
 
-                var isFocusable = automationElement.CachedIsKeyboardFocusable != 0;
-                //if (isFocusable)
-                //{
-                //    return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
-                //}
+                var expandCollapsePattern = (IUIAutomationExpandCollapsePattern) automationElement.GetCachedPattern(
+                    UIA_PatternIds.UIA_ExpandCollapsePatternId);
+                if (expandCollapsePattern != null)
+                {
+                    return new UiAutomationExpandCollapseHint(owningWindow, expandCollapsePattern, hintBounds);
+                }
 
-                if (isFocusable && !s_noFocusControlTypeIds.Contains(automationElement.CachedControlType))
+                var valuePattern = (IUIAutomationValuePattern)automationElement.GetCachedPattern(
+                    UIA_PatternIds.UIA_ValuePatternId);
+                if (valuePattern != null && valuePattern.CachedIsReadOnly == 0)
                 {
                     return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
                 }
-                // TODO: noncontainer
-                // TODO: focus part of item?
-                var isContainer = s_containerPropertyIds.Any(
-                    propertyId => (bool)automationElement.GetCachedPropertyValue(propertyId));
-                if (isContainer)
+
+                var rangeValuePattern = (IUIAutomationRangeValuePattern) automationElement.GetCachedPattern(
+                    UIA_PatternIds.UIA_RangeValuePatternId);
+                if (rangeValuePattern != null && rangeValuePattern.CachedIsReadOnly == 0)
                 {
                     return new UiAutomationFocusHint(owningWindow, automationElement, hintBounds);
                 }
-
+                
                 return null;
             }
             catch (Exception)
