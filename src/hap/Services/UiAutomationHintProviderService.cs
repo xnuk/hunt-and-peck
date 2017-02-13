@@ -57,6 +57,9 @@ namespace hap.Services
         /// </summary>
         private readonly IUIAutomationCacheRequest _itemCacheRequest;
 
+        private volatile int _iterations;
+        private readonly int _maxIterations;
+
         public UiAutomationHintProviderService()
         {
             _automation = new CUIAutomation();
@@ -126,6 +129,19 @@ namespace hap.Services
             {
                 _itemCacheRequest.AddProperty(propertyId);
             }
+
+            var sw = new Stopwatch();
+            sw.Start();
+            var i = 0;
+            for (; ; ++i)
+            {
+                if (i % 1048576 == 0 && sw.ElapsedMilliseconds >= 32)
+                {
+                    sw.Stop();
+                    break;
+                }
+            }
+            _maxIterations = i;
         }
 
         public HintSession EnumHints()
@@ -140,8 +156,22 @@ namespace hap.Services
 
         public HintSession EnumHints(IntPtr hWnd)
         {
-            Stopwatch sw = new Stopwatch();
+            // Burning CPU before enumeration improves enumeration performance.
+            // It takes shorter for Windows to return from WM_GETOBJECT SendMeesage.
+            // Same effect occurs when enumeration takes place
+            // just after successive enumerations without any delay,
+            // or just after a Console application begins,
+            // or in a button click handler called by pressing it with a mouse.
+            var sw = new Stopwatch();
             sw.Start();
+            for (_iterations = 0; _iterations <= _maxIterations; ++_iterations)
+            {
+
+            }
+            sw.Stop();
+            Debug.WriteLine("---- Burned {0} ms", sw.ElapsedMilliseconds);
+
+            sw.Restart();
             var session = EnumWindowHints(hWnd, CreateHint);
             sw.Stop();
 
