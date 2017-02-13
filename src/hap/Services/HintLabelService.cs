@@ -17,7 +17,7 @@ namespace hap.Services
         /// <returns>A list of hint strings</returns>
         public IList<string> GetHintStrings(int hintCount)
         {
-            var hintCharacters = new[] { 'S', 'A', 'D', 'F', 'W', 'Q', 'E', 'R', 'X', 'Z', 'C', 'V' };
+            var hintCharacters = new[] { 'T', 'N', 'S', 'E', 'R', 'I', 'P', 'L', 'F', 'U', 'W', 'Y' };
             var digitsNeeded = (int)Math.Ceiling(Math.Log(hintCount) / Math.Log(hintCharacters.Length));
 
             var hintStrings = new List<string>();
